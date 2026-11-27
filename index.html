@@ -44,15 +44,22 @@
       "rgba(255, 255, 255, 0.95)"
     ];
 
-    const DURATION = 4500; // мс (анімація програється 1 раз)
+    const DURATION = 4800; // мс (1 прохід)
+    const POP_WINDOW = 220; // мс — підсвітка щойно з'явленої фрази як на відео
 
+    // Форма серця як на 2-му фото: пологий верх з легкою виїмкою і звуження донизу
     function isInHeart(nx, ny) {
-      const x = nx * 1.04;
-      const y = (ny + 0.16) * 1.04;
-      return (x * x + Math.pow(y - Math.pow(x * x, 1 / 3), 2)) <= 1.0;
+      const ax = Math.abs(nx);
+      if (ax > 1.0) return false;
+
+      const topDip = 0.24 * Math.exp(-Math.pow(nx * 3.8, 2));
+      const shoulder = 0.76 - topDip - 0.14 * Math.pow(ax, 2.2);
+      const bottomTip = -0.92 + 0.96 * Math.pow(ax, 0.86);
+
+      return ny <= shoulder && ny >= bottomTip;
     }
 
-    function createRng(seed = 1337) {
+    function createRng(seed = 2026) {
       let s = seed >>> 0;
       return () => {
         s = (s * 1664525 + 1013904223) >>> 0;
@@ -65,51 +72,51 @@
 
     const SIZE = 1000;
     const CX = SIZE * 0.5;
-    const CY = SIZE * 0.52;
-    const SCALE_X = SIZE * 0.38;
-    const SCALE_Y = SIZE * 0.38;
+    const CY = SIZE * 0.50;
+    const SCALE_X = SIZE * 0.39;
+    const SCALE_Y = SIZE * 0.41;
 
-    const rng = createRng(1337);
+    const rng = createRng(2026);
     const items = [];
 
-    // Генеруємо багато щільних шарів дрібного тексту, щоб утворити суцільне серце
-    const TOTAL_ITEMS = 2400;
+    const TOTAL_ITEMS = 2500;
     let attempts = 0;
 
-    while (items.length < TOTAL_ITEMS && attempts < 35000) {
+    while (items.length < TOTAL_ITEMS && attempts < 38000) {
       attempts++;
       const text = PHRASES[Math.floor(rng() * PHRASES.length)];
       const color = COLORS[Math.floor(rng() * COLORS.length)];
-      const fontSize = Math.floor(8 + rng() * 5); // 8..12 px на полотні 1000x1000
+      const fontSize = Math.floor(8 + rng() * 5);
 
-      // Випадкова точка всередині контуру серця (з легкою рваністю по краях, як на відео)
-      const rx = (rng() * 2.24 - 1.12);
-      const ry = (rng() * 2.24 - 1.12);
+      const rx = rng() * 2.1 - 1.05;
+      const ry = rng() * 2.1 - 1.05;
       if (!isInHeart(rx, ry)) continue;
 
-      const px = CX + rx * SCALE_X - fontSize * 2.2;
+      const px = CX + rx * SCALE_X - fontSize * 2.1;
       const py = CY - ry * SCALE_Y - fontSize * 0.5;
 
-      // Перевіряємо, щоб правий край фрази не вилазив далеко за контур
-      const approxW = text.length * fontSize * 0.58;
+      const approxW = text.length * fontSize * 0.56;
       const rxRight = (px + approxW - CX) / SCALE_X;
-      if (!isInHeart(rxRight, ry) && rng() > 0.35) continue;
+      if (!isInHeart(rxRight, ry) && rng() > 0.25) continue;
 
+      // Кут і відстань від центру для появи спочатку по краях, потім усередині
       const angle = (Math.atan2(-ry, rx) + Math.PI) / (Math.PI * 2);
       const dist = Math.hypot(rx, ry);
-      const isEdge = dist > 0.72;
+      const isEdge = dist > 0.68;
 
-      // Спочатку промальовується зовнішній контур, потім заповнюється середина
       const orderKey = isEdge
-        ? angle * 0.45 + rng() * 0.06
-        : 0.45 + (1 - dist) * 0.45 + rng() * 0.1;
+        ? angle * 0.46 + rng() * 0.05
+        : 0.46 + (1 - dist) * 0.44 + rng() * 0.1;
 
       items.push({ x: px, y: py, text, color, fontSize, orderKey });
     }
 
     items.sort((a, b) => a.orderKey - b.orderKey);
+    for (let i = 0; i < items.length; i++) {
+      items[i].appearAt = (i / items.length) * DURATION;
+    }
 
-    // Попередньо малюємо підкладку світіння (glow) по формі серця для високого FPS на телефоні
+    // Попередньо рендеримо шар м'якого фіолетового світіння
     const glowCanvas = document.createElement("canvas");
     glowCanvas.width = SIZE;
     glowCanvas.height = SIZE;
@@ -124,45 +131,65 @@
     }
     gCtx.restore();
 
-    // Зберігаємо вже відмальовані кадри на окремий шар, щоб не перемальовувати 2400 рядків щоразу
-    const textCanvas = document.createElement("canvas");
-    textCanvas.width = SIZE;
-    textCanvas.height = SIZE;
-    const tCtx = textCanvas.getContext("2d");
-    tCtx.textBaseline = "top";
-    tCtx.shadowColor = "rgba(155, 110, 255, 0.75)";
-    tCtx.shadowBlur = 6;
+    // Базовий шар уже закріплених фраз
+    const settledCanvas = document.createElement("canvas");
+    settledCanvas.width = SIZE;
+    settledCanvas.height = SIZE;
+    const sCtx = settledCanvas.getContext("2d");
+    sCtx.textBaseline = "top";
+    sCtx.shadowColor = "rgba(155, 110, 255, 0.75)";
+    sCtx.shadowBlur = 6;
 
-    let drawnCount = 0;
+    let settledIndex = 0;
     const startTime = performance.now();
 
     function animate(now) {
       const elapsed = now - startTime;
       const progress = Math.min(1, elapsed / DURATION);
-      const targetCount = Math.floor(progress * items.length);
 
-      // Домальовуємо тільки нові фрази, які з'явилися на цьому кадрі
-      while (drawnCount < targetCount) {
-        const it = items[drawnCount];
-        tCtx.font = `600 ${it.fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif`;
-        tCtx.fillStyle = it.color;
-        tCtx.fillText(it.text, it.x, it.y);
-        drawnCount++;
+      // Закріплюємо фрази, спалах яких уже завершився
+      while (
+        settledIndex < items.length &&
+        elapsed - items[settledIndex].appearAt >= POP_WINDOW
+      ) {
+        const it = items[settledIndex];
+        sCtx.font = `600 ${it.fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif`;
+        sCtx.fillStyle = it.color;
+        sCtx.fillText(it.text, it.x, it.y);
+        settledIndex++;
       }
 
       ctx.fillStyle = "#04030a";
       ctx.fillRect(0, 0, SIZE, SIZE);
 
-      // М'яке неонове світіння навколо серця
+      // Фіолетове світіння наростає разом із появою серця
       ctx.save();
-      ctx.globalAlpha = 0.25 + 0.75 * progress;
+      ctx.globalAlpha = 0.2 + 0.8 * progress;
       ctx.drawImage(glowCanvas, 0, 0);
       ctx.restore();
 
-      // Шар з текстом
-      ctx.drawImage(textCanvas, 0, 0);
+      // Закріплені фрази
+      ctx.drawImage(settledCanvas, 0, 0);
 
-      if (progress < 1) {
+      // Свіжі фрази з легким спалахом появи як на відео
+      ctx.save();
+      ctx.textBaseline = "top";
+      ctx.shadowColor = "rgba(210, 180, 255, 0.95)";
+      ctx.shadowBlur = 12;
+
+      for (let i = settledIndex; i < items.length; i++) {
+        const it = items[i];
+        if (elapsed < it.appearAt) break;
+
+        const age = elapsed - it.appearAt;
+        const pop = 1 - Math.min(1, age / POP_WINDOW);
+        ctx.font = `600 ${it.fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif`;
+        ctx.fillStyle = pop > 0.35 ? "#ffffff" : it.color;
+        ctx.fillText(it.text, it.x, it.y);
+      }
+      ctx.restore();
+
+      if (progress < 1 || settledIndex < items.length) {
         requestAnimationFrame(animate);
       }
     }
